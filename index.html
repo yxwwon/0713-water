@@ -69,14 +69,14 @@
         const emptyMessage = document.getElementById('emptyMessage');
         const ctx = document.getElementById('waterQualityChart').getContext('2d');
 
-        // 큰따옴표 안의 쉼표(,) 및 비표준 인코딩 글자를 완벽 분리하는 파서
+        // 내부 쉼표를 완벽히 격리하고 공백을 순수하게 보존하는 CSV 파서
         function parseCSV(text) {
             const lines = text.split(/\r?\n/);
             if (lines.length === 0 || !lines[0]) return [];
             
             const result = [];
-            // 헤더의 공백 및 안보이는 특수문자 제거 정규식 적용
-            const headers = splitCSVLine(lines[0]).map(h => h.trim().replace(/[^a-zA-Z0-9가-힣]/g, ''));
+            // 불필요한 따옴표나 잔여물만 제거하고 글자(공백 포함)는 그대로 둡니다.
+            const headers = splitCSVLine(lines[0]).map(h => h.trim().replace(/^"|"$/g, ''));
 
             for (let i = 1; i < lines.length; i++) {
                 if (!lines[i].trim()) continue;
@@ -84,7 +84,7 @@
                 if (row.length >= headers.length) {
                     const obj = {};
                     headers.forEach((header, index) => {
-                        obj[header] = row[index] ? row[index].trim() : '';
+                        obj[header] = row[index] ? row[index].trim().replace(/^"|"$/g, '') : '';
                     });
                     result.push(obj);
                 }
@@ -116,23 +116,30 @@
                 const response = await fetch('data.csv');
                 if (!response.ok) throw new Error("FILE_NOT_FOUND");
 
-                // 한글 깨짐 원천 방어: 바이너리로 받아서 디코더(euc-kr / utf-8 자동대응 시도) 처리
                 const arrayBuffer = await response.arrayBuffer();
+                
+                // 1차로 utf-8 디코딩 시도
                 let decoder = new TextDecoder('utf-8');
                 let csvText = decoder.decode(arrayBuffer);
                 
-                // 만약 첫 글자가 심하게 깨져있다면 euc-kr(ANSI)로 재디코딩
-                if (csvText.includes('') || !csvText.includes('지점명')) {
+                // 깨짐 감지 정밀 검증: '지점명' 단어가 온전히 확인되지 않으면 euc-kr로 강제 재해석
+                if (!csvText.includes('지점명') && !csvText.includes('지점코드')) {
                     decoder = new TextDecoder('euc-kr');
                     csvText = decoder.decode(arrayBuffer);
                 }
 
                 currentCsvData = parseCSV(csvText);
 
-                // '지점명' 키값 추출 (공백 제거 상태 대응)
-                const stations = [...new Set(currentCsvData.map(item => item['지점명']))].filter(Boolean).sort();
+                if (currentCsvData.length === 0) throw new Error("NO_DATA");
+
+                // 데이터 내에 존재하는 실제 헤더 키 확인 및 지점명 배열화
+                // 헤더에 미세한 차이가 있을 수 있으므로 유연하게 매칭합니다.
+                const stationKey = Object.keys(currentCsvData[0]).find(k => k.includes('지점명')) || '지점명';
+                const itemKey = Object.keys(currentCsvData[0]).find(k => k.includes('측정항목')) || '측정항목';
+
+                const stations = [...new Set(currentCsvData.map(item => item[stationKey]))].filter(Boolean).sort();
                 
-                if (stations.length === 0) throw new Error("NO_DATA");
+                if (stations.length === 0) throw new Error("NO_STATIONS");
 
                 stationSelect.innerHTML = '<option value="">-- 지점명을 선택하세요 --</option>';
                 stations.forEach(station => {
@@ -144,7 +151,7 @@
             } catch (err) {
                 stationSelect.innerHTML = '<option value="">로딩 실패</option>';
                 errorBanner.classList.remove('hidden');
-                errorMessage.innerHTML = "현재 저장소 루트에 소문자 <strong>data.csv</strong> 파일이 정확히 있는지 확인해 주세요. 파일 내 한글 인코딩 규격을 자동 스캔하는 데 실패했습니다.";
+                errorMessage.innerHTML = "CSV 텍스트 인코딩을 해석하지 못했거나 구조가 다릅니다. 파일명이 완전히 소문자 <strong>data.csv</strong>인지, 깃허브 최상위에 나란히 있는지 한 번 더 봐주세요!";
             }
         }
 
@@ -157,8 +164,11 @@
                 return;
             }
 
-            const filteredRows = currentCsvData.filter(row => row['지점명'] === selectedStation);
-            const items = [...new Set(filteredRows.map(row => row['측정항목']))].filter(Boolean).sort();
+            const stationKey = Object.keys(currentCsvData[0]).find(k => k.includes('지점명')) || '지점명';
+            const itemKey = Object.keys(currentCsvData[0]).find(k => k.includes('측정항목')) || '측정항목';
+
+            const filteredRows = currentCsvData.filter(row => row[stationKey] === selectedStation);
+            const items = [...new Set(filteredRows.map(row => row[itemKey]))].filter(Boolean).sort();
 
             itemSelect.innerHTML = '<option value="">-- 측정항목을 선택하세요 --</option>';
             items.forEach(item => {
@@ -175,48 +185,7 @@
             const item = itemSelect.value;
             if (!station || !item) { resetChart(); return; }
 
-            const dataRow = currentCsvData.find(row => row['지점명'] === station && row['측정항목'] === item);
-            if (!dataRow) { resetChart(); return; }
+            const stationKey = Object.keys(currentCsvData[0]).find(k => k.includes('지점명')) || '지점명';
+            const itemKey = Object.keys(currentCsvData[0]).find(k => k.includes('측정항목')) || '측정항목';
 
-            const chartLabels = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월'];
-            const chartData = [];
-
-            for (let m = 1; m <= 12; m++) {
-                // 헤더 매칭 시 미세 공백을 없앴으므로 안전하게 가져옴
-                const key = `2026년${m}월`;
-                const val = dataRow[key];
-                chartData.push((val !== undefined && val !== '') ? parseFloat(val) : null);
-            }
-
-            renderChart(`${station} - ${item} 추이`, chartLabels, chartData);
-        });
-
-        function renderChart(label, labels, data) {
-            document.getElementById('waterQualityChart').classList.remove('hidden');
-            emptyMessage.classList.add('hidden');
-            if (chartInstance) chartInstance.destroy();
-
-            chartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: label, data: data,
-                        borderColor: '#2563eb', backgroundColor: 'rgba(37, 99, 235, 0.1)',
-                        borderWidth: 2, pointRadius: 4, spanGaps: true
-                    }]
-                },
-                options: { responsive: true, maintainAspectRatio: false }
-            });
-        }
-
-        function resetChart() {
-            if (chartInstance) chartInstance.destroy();
-            document.getElementById('waterQualityChart').classList.add('hidden');
-            emptyMessage.classList.remove('hidden');
-        }
-
-        window.addEventListener('DOMContentLoaded', loadData);
-    </script>
-</body>
-</html>
+            const data
