@@ -29,19 +29,9 @@
             <h2 class="text-lg font-bold text-gray-700 border-b pb-2">📊 데이터 필터</h2>
             
             <div>
-                <label class="block text-sm font-semibold text-gray-600 mb-1">수질 데이터 구분</label>
-                <select id="categorySelect" class="w-full p-2 border rounded-lg bg-gray-50 focus:ring-2 focus:ring-blue-400 outline-none">
-                    <option value="전국수질측정자료_202604.xlsx - 하천.csv">하천 수질 자료</option>
-                    <option value="전국수질측정자료_202604.xlsx - 호소.csv">호소 수질 자료</option>
-                    <option value="전국수질측정자료_202604.xlsx - 산단하천.csv">산단하천 수질 자료</option>
-                    <option value="전국수질측정자료_202604.xlsx - 도시관류.csv">도시관류 수질 자료</option>
-                </select>
-            </div>
-
-            <div>
                 <label class="block text-sm font-semibold text-gray-600 mb-1">지점명 검색/선택</label>
-                <select id="stationSelect" class="w-full p-2 border rounded-lg bg-gray-50 focus:ring-2 focus:ring-blue-400 outline-none" disabled>
-                    <option value="">카테고리를 로딩 중입니다...</option>
+                <select id="stationSelect" class="w-full p-2 border rounded-lg bg-gray-50 focus:ring-2 focus:ring-blue-400 outline-none">
+                    <option value="">데이터를 로딩 중입니다...</option>
                 </select>
             </div>
 
@@ -59,20 +49,17 @@
                 <div class="flex items-start">
                     <div class="flex-shrink-0 text-red-500 text-xl font-bold">⚠️</div>
                     <div class="ml-3">
-                        <h3 class="text-sm font-bold text-red-800" id="errorTitle">CSV 파일을 불러오지 못했습니다.</h3>
-                        <div class="mt-2 text-xs text-red-700 space-y-1" id="errorMessage"></div>
+                        <h3 class="text-sm font-bold text-red-800">data.csv 로드 실패</h3>
+                        <div class="mt-2 text-xs text-red-700 space-y-1">
+                            GitHub 저장소 메인 공간에 <strong>data.csv</strong> 파일이 정확히 올라가 있는지 확인해 주세요.
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <div id="loadingOverlay" class="hidden flex flex-col items-center justify-center p-20 bg-white rounded-xl shadow-sm border border-gray-100">
-                <div class="loader ease-linear rounded-full border-4 border-t-4 border-gray-200 h-12 w-12 mb-4"></div>
-                <p class="text-gray-500 font-medium">데이터를 분석하고 가공하는 중입니다...</p>
-            </div>
-
             <div id="chartContainer" class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 min-h-[400px] flex items-center justify-center">
                 <canvas id="waterQualityChart" class="w-full h-full hidden"></canvas>
-                <p id="emptyMessage" class="text-gray-400 font-medium text-center">왼쪽 필터에서 카테고리와 지점, 항목을 선택하면 추이 그래프가 나타납니다.</p>
+                <p id="emptyMessage" class="text-gray-400 font-medium text-center">왼쪽 필터에서 지점과 항목을 선택하면 추이 그래프가 나타납니다.</p>
             </div>
             
         </div>
@@ -86,21 +73,19 @@
         let currentCsvData = [];
         let chartInstance = null;
 
-        const categorySelect = document.getElementById('categorySelect');
         const stationSelect = document.getElementById('stationSelect');
         const itemSelect = document.getElementById('itemSelect');
         const errorBanner = document.getElementById('errorBanner');
-        const errorTitle = document.getElementById('errorTitle');
-        const errorMessage = document.getElementById('errorMessage');
-        const loadingOverlay = document.getElementById('loadingOverlay');
         const emptyMessage = document.getElementById('emptyMessage');
         const ctx = document.getElementById('waterQualityChart').getContext('2d');
 
+        // CSV 분석 및 공백 보정 파서
         function parseCSV(text) {
             const lines = text.split(/\r?\n/);
             if (lines.length === 0 || !lines[0]) return [];
             
             const result = [];
+            // 헤더 내부의 미세한 공백을 미리 다 지워서 비교를 편리하게 만듭니다.
             const headers = splitCSVLine(lines[0]).map(h => h.trim().replace(/\s+/g, ''));
 
             for (let i = 1; i < lines.length; i++) {
@@ -136,4 +121,122 @@
             return result;
         }
 
-        async function loadData(fileName) {
+        async function loadData() {
+            try {
+                // 단일 파일명 data.csv 매칭
+                const response = await fetch('data.csv');
+                if (!response.ok) throw new Error();
+
+                const csvText = await response.text();
+                currentCsvData = parseCSV(csvText);
+
+                // 지점명 추출 및 가나다순 정렬
+                const stations = [...new Set(currentCsvData.map(item => item['지점명']))].filter(Boolean).sort();
+                
+                stationSelect.innerHTML = '<option value="">-- 지점명을 선택하세요 --</option>';
+                stations.forEach(station => {
+                    const opt = document.createElement('option');
+                    opt.value = station;
+                    opt.textContent = station;
+                    stationSelect.appendChild(opt);
+                });
+                errorBanner.classList.add('hidden');
+            } catch (err) {
+                stationSelect.innerHTML = '<option value="">파일을 읽을 수 없음</option>';
+                errorBanner.classList.remove('hidden');
+            }
+        }
+
+        stationSelect.addEventListener('change', () => {
+            const selectedStation = stationSelect.value;
+            if (!selectedStation) {
+                itemSelect.innerHTML = '<option value="">-- 지점을 먼저 선택하세요 --</option>';
+                itemSelect.disabled = true;
+                resetChart();
+                return;
+            }
+
+            const filteredRows = currentCsvData.filter(row => row['지점명'] === selectedStation);
+            const items = [...new Set(filteredRows.map(row => row['측정항목']))].filter(Boolean).sort();
+
+            itemSelect.innerHTML = '<option value="">-- 측정항목을 선택하세요 --</option>';
+            items.forEach(item => {
+                const opt = document.createElement('option');
+                opt.value = item;
+                opt.textContent = item;
+                itemSelect.appendChild(opt);
+            });
+
+            itemSelect.disabled = false;
+            resetChart();
+        });
+
+        itemSelect.addEventListener('change', () => {
+            const station = stationSelect.value;
+            const item = itemSelect.value;
+
+            if (!station || !item) {
+                resetChart();
+                return;
+            }
+
+            const dataRow = currentCsvData.find(row => row['지점명'] === station && row['측정항목'] === item);
+            if (!dataRow) {
+                resetChart();
+                return;
+            }
+
+            const chartLabels = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월'];
+            const chartData = [];
+
+            for (let m = 1; m <= 12; m++) {
+                const key = `2026년${m}월`;
+                const val = dataRow[key];
+                chartData.push((val !== undefined && val !== '') ? parseFloat(val) : null);
+            }
+
+            renderChart(`${station} - ${item} 월간 추이`, chartLabels, chartData);
+        });
+
+        function renderChart(label, labels, data) {
+            document.getElementById('waterQualityChart').classList.remove('hidden');
+            emptyMessage.classList.add('hidden');
+
+            if (chartInstance) chartInstance.destroy();
+
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: label,
+                        data: data,
+                        borderColor: '#2563eb',
+                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                        borderWidth: 2,
+                        pointBackgroundColor: '#1d4ed8',
+                        pointRadius: 4,
+                        spanGaps: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { title: { display: true, text: '측정치' } },
+                        x: { title: { display: true, text: '2026년' } }
+                    }
+                }
+            });
+        }
+
+        function resetChart() {
+            if (chartInstance) chartInstance.destroy();
+            document.getElementById('waterQualityChart').classList.add('hidden');
+            emptyMessage.classList.remove('hidden');
+        }
+
+        window.addEventListener('DOMContentLoaded', loadData);
+    </script>
+</body>
+</html>
